@@ -17,3 +17,7 @@ output "public_instance_ip" {
 output "private_instance_ip" {
   value = aws_instance.private_instance.private_ip
 }
+
+output "nat_gateway_ip" {
+  value = aws_eip.nat.public_ip
+}

@@ -31,6 +31,21 @@ resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.my_vpc.id
 }
 
+############### NAT GATEWAY
+resource "aws_eip" "nat" {
+  domain = "vpc"
+  tags = { Name = "eip-nat" }
+}
+
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = module.public_subnet.subnet_id
+
+  # To ensure proper ordering, it is recommended to add an explicit dependency
+  # on the Internet Gateway for the VPC.
+  depends_on = [aws_internet_gateway.igw]
+}
+
 ############### ROUTING TABLES
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.my_vpc.id
@@ -39,6 +54,15 @@ resource "aws_route_table" "public" {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
+}
+
+resource "aws_route_table" "through_nat_gw" {
+  vpc_id = aws_vpc.my_vpc.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_nat_gateway.nat.id
+  }
+  tags = { Name = "public-rt" }
 }
 
 ############### SUBNETS
@@ -62,6 +86,11 @@ module "private_subnet" {
 resource "aws_route_table_association" "public_subnet" {
   subnet_id      = module.public_subnet.subnet_id
   route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "private_subnet" {
+  subnet_id      = module.private_subnet.subnet_id
+  route_table_id = aws_route_table.through_nat_gw.id
 }
 
 ############### SECURITY GROUP
@@ -98,6 +127,12 @@ resource "aws_security_group" "private_sg" {
     to_port     = -1
     protocol    = "icmp"
     cidr_blocks = [local.subnet_cidrs["public"]]
+  }
+  egress {
+    from_port   = 8 # echo-request
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
