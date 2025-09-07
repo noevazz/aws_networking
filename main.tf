@@ -19,28 +19,37 @@ locals {
     "public" : cidrsubnet(var.vcp_cidr, 8, 0),
     "private" : cidrsubnet(var.vcp_cidr, 8, 1),
   }
+  private_ipv6_64 = cidrsubnet(aws_vpc.my_vpc.ipv6_cidr_block, 8, 1)
 }
 
 ############### VPC
 resource "aws_vpc" "my_vpc" {
-  cidr_block = var.vcp_cidr
+  cidr_block                       = var.vcp_cidr
+  assign_generated_ipv6_cidr_block = true
 }
 
 ############### INTERNET GATEWAY
 resource "aws_internet_gateway" "igw" {
+  # intertet gateway does not support ipv6-to-ipv6 traffic
+  # but there's another resource called eggress-only internet gateway
+  vpc_id = aws_vpc.my_vpc.id
+}
+
+# EGRESS-ONLY INTERNET GATEWAY
+# https://docs.aws.amazon.com/vpc/latest/userguide/egress-only-internet-gateway.html
+resource "aws_egress_only_internet_gateway" "eonly_igw" {
   vpc_id = aws_vpc.my_vpc.id
 }
 
 ############### NAT GATEWAY
 resource "aws_eip" "nat" {
   domain = "vpc"
-  tags = { Name = "eip-nat" }
+  tags   = { Name = "eip-nat" }
 }
 
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat.id
   subnet_id     = module.public_subnet.subnet_id
-
   # To ensure proper ordering, it is recommended to add an explicit dependency
   # on the Internet Gateway for the VPC.
   depends_on = [aws_internet_gateway.igw]
@@ -56,30 +65,36 @@ resource "aws_route_table" "public" {
   }
 }
 
-resource "aws_route_table" "through_nat_gw" {
+resource "aws_route_table" "private_rt" {
   vpc_id = aws_vpc.my_vpc.id
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_nat_gateway.nat.id
   }
-  tags = { Name = "public-rt" }
+  route {
+    ipv6_cidr_block        = "::/0"
+    egress_only_gateway_id = aws_egress_only_internet_gateway.eonly_igw.id
+  }
 }
 
 ############### SUBNETS
 module "public_subnet" {
-  source                  = "./modules/subnet"
-  vpc_id                  = aws_vpc.my_vpc.id
-  cidr_block              = local.subnet_cidrs["public"]
-  availability_zone       = "us-west-1a"
-  map_public_ip_on_launch = true
+  source                          = "./modules/subnet"
+  vpc_id                          = aws_vpc.my_vpc.id
+  cidr_block                      = local.subnet_cidrs["public"]
+  availability_zone               = "us-west-1a"
+  map_public_ip_on_launch         = true
+  assign_ipv6_address_on_creation = false
 }
 
 module "private_subnet" {
-  source                  = "./modules/subnet"
-  vpc_id                  = aws_vpc.my_vpc.id
-  cidr_block              = local.subnet_cidrs["private"]
-  availability_zone       = "us-west-1a"
-  map_public_ip_on_launch = false
+  source                          = "./modules/subnet"
+  vpc_id                          = aws_vpc.my_vpc.id
+  cidr_block                      = local.subnet_cidrs["private"]
+  availability_zone               = "us-west-1a"
+  map_public_ip_on_launch         = false
+  assign_ipv6_address_on_creation = true
+  ipv6_cidr_block                 = local.private_ipv6_64
 }
 
 ############### ROUTING TABLES ASSOCIATIONS
@@ -90,7 +105,7 @@ resource "aws_route_table_association" "public_subnet" {
 
 resource "aws_route_table_association" "private_subnet" {
   subnet_id      = module.private_subnet.subnet_id
-  route_table_id = aws_route_table.through_nat_gw.id
+  route_table_id = aws_route_table.private_rt.id
 }
 
 ############### SECURITY GROUP
@@ -133,6 +148,12 @@ resource "aws_security_group" "private_sg" {
     to_port     = -1
     protocol    = "icmp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port        = -1
+    to_port          = -1
+    protocol         = "icmpv6"
+    ipv6_cidr_blocks = ["::/0"]
   }
 }
 
